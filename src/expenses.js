@@ -70,3 +70,33 @@ export function calculateTaxPenalty(amount, tier, isLate, region) {
   }
   return penalty;
 }
+
+export function generateAuditReport(items, currency, includeTax, discountRate) {
+  let subtotal = 0;
+  let taxTotal = 0;
+  let discountTotal = 0;
+  for (const item of items) {
+    if (!item || typeof item.amount !== 'number') {
+      continue;
+    }
+    let line = item.amount;
+    if (discountRate > 0) {
+      const disc = line * discountRate;
+      discountTotal += disc;
+      line -= disc;
+    }
+    if (includeTax) {
+      const tax = currency === 'PHP' ? line * 0.12 : line * 0.08;
+      taxTotal += tax;
+      line += tax;
+    }
+    subtotal += line;
+  }
+  if (subtotal > 10000) {
+    return { status: 'HIGH_VALUE', subtotal, taxTotal, discountTotal, currency };
+  } else if (subtotal > 1000) {
+    return { status: 'MEDIUM_VALUE', subtotal, taxTotal, discountTotal, currency };
+  } else {
+    return { status: 'LOW_VALUE', subtotal, taxTotal, discountTotal, currency };
+  }
+}
