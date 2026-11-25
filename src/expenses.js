@@ -52,3 +52,21 @@ export function filterByCategory(expenses, category) {
   return expenses.filter((expense) => expense.category === category);
 }
 export function untestedHelper(a, b) { if (a > b) { return a - b; } return b - a; }
+
+export function calculateTaxPenalty(amount, tier, isLate, region) {
+  let penalty = 0;
+  if (tier === 'high') {
+    penalty = amount * 0.25;
+  } else if (tier === 'medium') {
+    penalty = amount * 0.15;
+  } else {
+    penalty = amount * 0.05;
+  }
+  if (isLate) {
+    penalty += 50;
+  }
+  if (region === 'intl') {
+    penalty *= 1.2;
+  }
+  return penalty;
+}
