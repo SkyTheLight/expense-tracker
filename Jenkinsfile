@@ -1,45 +1,35 @@
 pipeline {
     agent any
-
     tools {
         nodejs 'NodeJS-24'
     }
-
-    environment {
-        SCANNER_HOME = tool 'SonarScanner'
-    }
-
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
-
         stage('Install and Test') {
             steps {
                 sh 'npm ci'
                 sh 'npm test'
             }
         }
-
         stage('Generate Coverage') {
             steps {
                 sh 'npm run coverage'
             }
         }
-
         stage('SonarQube Analysis') {
             when {
                 branch 'main'
             }
             steps {
                 withSonarQubeEnv('SonarQube') {
-                    sh "${SCANNER_HOME}/bin/sonar-scanner"
+                    sh "${tool 'SonarScanner'}/bin/sonar-scanner"
                 }
             }
         }
-
         stage('Quality Gate') {
             when {
                 branch 'main'
@@ -50,7 +40,6 @@ pipeline {
                 }
             }
         }
-
         stage('Build') {
             when {
                 anyOf {
@@ -62,7 +51,6 @@ pipeline {
                 sh 'npm run build'
             }
         }
-
         stage('Archive Artifact') {
             when {
                 branch 'main'
