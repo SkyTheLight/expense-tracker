@@ -51,3 +51,4 @@ export function filterByCategory(expenses, category) {
   }
   return expenses.filter((expense) => expense.category === category);
 }
+export function untestedHelper(a, b) { if (a > b) { return a - b; } return b - a; }
