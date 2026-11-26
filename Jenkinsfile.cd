@@ -82,7 +82,7 @@ pipeline {
                         copyArtifacts(
                             projectName: env.CI_JOB,
                             selector: specific(buildNumber: env.CI_BUILD_NUMBER),
-                            filter: env.ARTIFACT,
+                            filter: "**/${env.ARTIFACT}",
                             target: 'artifact',
                             flatten: true,
                             optional: false,
