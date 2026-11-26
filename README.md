@@ -118,6 +118,36 @@ Port mapping (gawa ni C):
 
 Dockerfile: `nginx:1.27-alpine`, serves `dist/` sa `/usr/share/nginx/html/`, `EXPOSE 80`, at may `HEALTHCHECK` gamit ang `wget`.
 
+### Jenkins CD pipeline (`Jenkinsfile.cd`)
+
+Hiwalay na **Pipeline** job ito — hindi Multibranch — gamit ang repo bilang SCM at **Script Path** na `Jenkinsfile.cd`. Hindi nito binabago ang existing na CI `Jenkinsfile`.
+
+**Required plugins (i-verify sa Jenkins bago gamitin; hindi pa nakumpirmang naka-install):**
+
+- Pipeline: Declarative + Pipeline: Job
+- Git SCM
+- **Copy Artifact Plugin** (`copyArtifacts`) — kailangan para kumuha ng artifact mula sa `expense-tracker/main`
+- Docker CLI sa Jenkins agent na may access sa Docker daemon (kung nasa container ang Jenkins, kailangang i-mount ang Docker socket)
+
+| Parameter | Type | Meaning |
+| --- | --- | --- |
+| `CI_BUILD_NUMBER` | String | Build number ng `expense-tracker/main` na nag-archive ng artifact (hal. `9`) |
+| `ENVIRONMENT` | Choice | `DEV`, `TEST`, `ACC`, `PROD` |
+
+**Stages:** Validate and report parameters → Approve PROD deployment (`input`, **PROD lang**) → Copy CI artifact → Extract artifact → Docker deploy → Health check. Walang `npm ci`, `npm test`, o `npm run build` sa CD — ang na-archive nang artifact mula CI lang ang ine-deploy.
+
+**Image at container:** `expense-tracker:<lowercase-env>-<CI_BUILD_NUMBER>` at `expense-tracker-<lowercase-env>`. Ang container lang ng napiling environment ang tinatanggal bago mag-start; hindi naaapektuhan ang ibang environment.
+
+**Health check:** Hintay hanggang `healthy` ang container (180s timeout, 5s polling). Kapag nabigo, ipi-print ang `docker ps`, `docker logs`, at `docker inspect`, tapos i-fail ang build — hindi ito magre-report ng successful deployment.
+
+**Paano mag-deploy ng existing CI build:**
+
+1. Sa Jenkins, buksan ang CD job → **Build with Parameters**.
+2. Itakda ang `CI_BUILD_NUMBER` sa build number ng `main` na may artifact (hal. `9` → `react-app-9.tar.gz`).
+3. Piliin ang `ENVIRONMENT`.
+4. Para sa `PROD`, i-approve muna ang pending `input` bago mag-deploy.
+5. I-verify sa console ang application URL at ang `Deployment result`.
+
 ## SonarQube
 
 - Coverage input: `coverage/lcov.info` (V8 provider, `text` + `lcov` reporters)

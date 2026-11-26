@@ -1,0 +1,225 @@
+pipeline {
+    agent any
+
+    options {
+        skipDefaultCheckout()
+        timestamps()
+        timeout(time: 45, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(
+            name: 'CI_BUILD_NUMBER',
+            defaultValue: '',
+            description: 'Build number from expense-tracker/main that archived react-app-<BUILD_NUMBER>.tar.gz, e.g. 9.'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['DEV', 'TEST', 'ACC', 'PROD'],
+            description: 'Target environment. PROD requires manual approval before deployment.'
+        )
+    }
+
+    environment {
+        CI_JOB                 = 'expense-tracker/main'
+        IMAGE_BASE             = 'expense-tracker'
+        HEALTH_TIMEOUT_SECONDS = '180'
+    }
+
+    stages {
+        stage('Validate and report parameters') {
+            steps {
+                script {
+                    def buildNumber = (params.CI_BUILD_NUMBER ?: '').toString().trim()
+                    def environmentName = (params.ENVIRONMENT ?: '').toString().trim().toUpperCase()
+
+                    env.CI_BUILD_NUMBER = buildNumber
+                    env.ENVIRONMENT     = environmentName
+
+                    def allowedEnvironments = ['DEV', 'TEST', 'ACC', 'PROD']
+                    if (!(environmentName in allowedEnvironments)) {
+                        error "Invalid ENVIRONMENT '${environmentName}'. Choose DEV, TEST, ACC, or PROD."
+                    }
+
+                    def ports = [DEV: 3001, TEST: 3002, ACC: 3003, PROD: 3004]
+
+                    env.LOWER_ENV       = environmentName.toLowerCase()
+                    env.PORT            = ports[environmentName].toString()
+                    env.ARTIFACT        = "react-app-${buildNumber}.tar.gz"
+                    env.IMAGE_NAME      = "${env.IMAGE_BASE}:${env.LOWER_ENV}-${buildNumber}"
+                    env.CONTAINER_NAME  = "${env.IMAGE_BASE}-${env.LOWER_ENV}"
+                    env.APP_URL         = "http://localhost:${env.PORT}"
+
+                    if (!(buildNumber ==~ /\d+/)) {
+                        error "Invalid CI_BUILD_NUMBER '${buildNumber}'. Enter the numeric CI build number that archived the artifact."
+                    }
+                }
+
+                echo "CI build number      : ${env.CI_BUILD_NUMBER}"
+                echo "CD build number      : ${env.BUILD_NUMBER}"
+                echo "Selected environment : ${env.ENVIRONMENT}"
+                echo "Docker image name    : ${env.IMAGE_NAME}"
+                echo "Container name       : ${env.CONTAINER_NAME}"
+                echo "Application URL      : ${env.APP_URL}"
+            }
+        }
+
+        stage('Approve PROD deployment') {
+            when {
+                expression { env.ENVIRONMENT == 'PROD' }
+            }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: "Deploy PROD from ${env.CI_JOB} #${env.CI_BUILD_NUMBER}?", ok: 'Approve and deploy'
+                }
+            }
+        }
+
+        stage('Copy CI artifact') {
+            steps {
+                script {
+                    try {
+                        copyArtifacts(
+                            projectName: env.CI_JOB,
+                            selector: specific(buildNumber: env.CI_BUILD_NUMBER),
+                            filter: env.ARTIFACT,
+                            target: 'artifact',
+                            flatten: true,
+                            optional: false,
+                            fingerprintArtifacts: true
+                        )
+                    } catch (Exception e) {
+                        error "Could not copy ${env.ARTIFACT} from ${env.CI_JOB} #${env.CI_BUILD_NUMBER}: ${e.getMessage()}"
+                    }
+
+                    if (!fileExists("artifact/${env.ARTIFACT}")) {
+                        error "Artifact ${env.ARTIFACT} was not found in ${env.CI_JOB} #${env.CI_BUILD_NUMBER}."
+                    }
+                    echo "Copied artifact: artifact/${env.ARTIFACT}"
+                }
+            }
+        }
+
+        stage('Extract artifact') {
+            steps {
+                dir('deploy') {
+                    sh '''
+set -eu
+tar -xzf "../artifact/${ARTIFACT}"
+if [ ! -f Dockerfile ]; then
+  echo "ERROR: Dockerfile is missing from ${ARTIFACT}"
+  exit 1
+fi
+if [ ! -d dist ]; then
+  echo "ERROR: dist/ is missing from ${ARTIFACT}"
+  exit 1
+fi
+echo "Extracted artifact contents:"
+find . -maxdepth 2 -type f | sort
+'''
+                }
+            }
+        }
+
+        stage('Docker deploy') {
+            steps {
+                dir('deploy') {
+                    sh '''
+set -eu
+if ! command -v docker >/dev/null 2>&1; then
+  echo "ERROR: docker CLI is not available on the Jenkins agent"
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "ERROR: Docker daemon is unavailable on the Jenkins agent"
+  exit 1
+fi
+
+echo "Building image ${IMAGE_NAME}"
+docker build -t "${IMAGE_NAME}" .
+
+if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
+  echo "Removing existing container ${CONTAINER_NAME}"
+  docker rm -f "${CONTAINER_NAME}"
+fi
+
+echo "Starting container ${CONTAINER_NAME} on port ${PORT}"
+docker run -d --name "${CONTAINER_NAME}" -p "${PORT}:80" "${IMAGE_NAME}"
+
+if ! docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" | grep -q true; then
+  echo "ERROR: container ${CONTAINER_NAME} is not running"
+  docker logs "${CONTAINER_NAME}" || true
+  exit 1
+fi
+echo "Container ${CONTAINER_NAME} started"
+'''
+                }
+            }
+        }
+
+        stage('Health check') {
+            steps {
+                script {
+                    try {
+                        sh '''
+set -eu
+deadline=$(( $(date +%s) + $HEALTH_TIMEOUT_SECONDS ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${CONTAINER_NAME}" 2>/dev/null || echo missing)
+  case "$status" in
+    healthy)
+      echo "Container ${CONTAINER_NAME} is healthy"
+      exit 0
+      ;;
+    unhealthy)
+      echo "ERROR: container ${CONTAINER_NAME} reported unhealthy"
+      exit 1
+      ;;
+  esac
+
+  running=$(docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null || echo false)
+  if [ "$running" != "true" ]; then
+    echo "ERROR: container ${CONTAINER_NAME} stopped before becoming healthy"
+    exit 1
+  fi
+  sleep 5
+done
+
+echo "ERROR: health check timed out after ${HEALTH_TIMEOUT_SECONDS}s for ${CONTAINER_NAME}"
+exit 1
+'''
+                    } catch (Exception e) {
+                        sh '''
+set +e
+echo "--- Diagnostic: docker ps ---"
+docker ps -a --filter "name=${CONTAINER_NAME}" --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
+echo "--- Diagnostic: docker logs ---"
+docker logs --tail 100 "${CONTAINER_NAME}"
+echo "--- Diagnostic: docker inspect ---"
+docker inspect "${CONTAINER_NAME}"
+'''
+                        error "Health check failed for ${env.CONTAINER_NAME}: ${e.getMessage()}"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployment result    : SUCCESS"
+            echo "Application URL      : ${env.APP_URL}"
+        }
+        failure {
+            echo "Deployment result    : FAILED"
+        }
+        always {
+            echo "CI build number      : ${env.CI_BUILD_NUMBER}"
+            echo "CD build number      : ${env.BUILD_NUMBER}"
+            echo "Selected environment : ${env.ENVIRONMENT}"
+            echo "Docker image name    : ${env.IMAGE_NAME}"
+            echo "Container name       : ${env.CONTAINER_NAME}"
+            echo "Application URL      : ${env.APP_URL}"
+        }
+    }
+}
