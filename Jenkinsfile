@@ -31,7 +31,7 @@ pipeline {
 
         stage('SonarQube Analysis') {
             when {
-                branch 'main'
+                anyOf { branch 'main'; branch 'feature/expense-tracker' }
             }
             steps {
                 withSonarQubeEnv('SonarQube') {
@@ -42,7 +42,7 @@ pipeline {
 
         stage('Quality Gate') {
             when {
-                branch 'main'
+                anyOf { branch 'main'; branch 'feature/expense-tracker' }
             }
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
@@ -54,7 +54,7 @@ pipeline {
         stage('Build') {
             when {
                 anyOf {
-                    branch 'main'
+                    anyOf { branch 'main'; branch 'feature/expense-tracker' }
                     branch 'develop'
                 }
             }
@@ -65,7 +65,7 @@ pipeline {
 
         stage('Archive Artifact') {
             when {
-                branch 'main'
+                anyOf { branch 'main'; branch 'feature/expense-tracker' }
             }
             steps {
                 sh 'chmod +x package-artifact.sh && ./package-artifact.sh ${BUILD_NUMBER}'
